@@ -107,57 +107,71 @@ print(f"  Izquierda: {T_izquierda}°C | Derecha: {T_derecha}°C")
 print("-" * 40)
 
 # ============================================================
-# CONSTRUCCIÓN DEL VECTOR DE TÉRMINOS INDEPENDIENTES (b)
+# CONSTRUCCIÓN DE LOS VECTORES DE TÉRMINOS INDEPENDIENTES (b)
 # ============================================================
-print("\nIniciando construcción del vector b...")
-b = np.zeros(N_total)
+print("\nIniciando construcción de los vectores b...")
 
+# 1. Creamos el vector base SOLO con las condiciones de frontera
+b_sin_fuente = np.zeros(N_total)
+
+# Borde Superior e Inferior
+b_sin_fuente[0 : n] += T_superior
+b_sin_fuente[(n - 1) * n : N_total] += T_inferior
+
+# Borde Izquierdo y Derecho
+b_sin_fuente[0 : N_total : n] += T_izquierda
+b_sin_fuente[n - 1 : N_total : n] += T_derecha
+
+# 2. Creamos una copia para el escenario CON fuente y le inyectamos el calor
+b_con_fuente = np.copy(b_sin_fuente)
 centro_i = n // 2
 centro_j = n // 2
 k_centro = centro_i * n + centro_j
-b[k_centro] += f_intensidad * (h**2)
 
-# Borde Superior (Fila i=0 -> Índices del 0 al n-1)
-b[0 : n] += T_superior
-
-# Borde Inferior (Fila i=n-1 -> Índices desde (n-1)*n hasta el final)
-b[(n - 1) * n : N_total] += T_inferior
-
-# Borde Izquierdo (Columna j=0 -> Índices de 0 a N_total saltando de n en n)
-b[0 : N_total : n] += T_izquierda
-
-# Borde Derecha (Columna j=n-1 -> Índices de n-1 a N_total saltando de n en n)
-b[n - 1 : N_total : n] += T_derecha
+# Incrementamos la intensidad temporalmente para que el pico sea bien visible en la gráfica
+f_intensidad = 100000 
+b_con_fuente[k_centro] += f_intensidad * (h**2)
 
 # ============================================================
-# SOLUCIÓN DEL SISTEMA POR CHOLESKY
+# SOLUCIÓN DEL SISTEMA POR CHOLESKY (AMBOS ESCENARIOS)
 # ============================================================
-
-print("\nResolviendo el sistema de ecuaciones...")
-
-# la.cholesky con lower=True calcula la descomposición exacta de Cholesky
+print("\nResolviendo los sistemas de ecuaciones...")
 print("1. Calculando la matriz triangular inferior L...")
 L = la.cholesky(A, lower=True)
 
-print("2. Resolviendo L * y = b (Sustitución hacia adelante)...")
-y = la.solve_triangular(L, b, lower=True)
+print("2. Resolviendo escenario SIN fuente de calor...")
+y_sin = la.solve_triangular(L, b_sin_fuente, lower=True)
+u_lineal_sin = la.solve_triangular(L, y_sin, lower=True, trans=1)
+U_interno_sin = u_lineal_sin.reshape((n, n))
 
-print("3. Resolviendo L^T * u = y (Sustitución hacia atrás)...")
-u_lineal = la.solve_triangular(L, y, lower=True, trans=1)  # trans=1 es para usar L^T
-
-# Se redimensiona el vector a la malla
-U_interno = u_lineal.reshape((n, n))
-
-print(f"Forma de la matriz de Cholesky L: {L.shape}")
-print(f"Temperatura en el centro de la placa: {U_interno[centro_i, centro_j]:.6f}°C")
-print("-" * 40)
+print("3. Resolviendo escenario CON fuente de calor...")
+y_con = la.solve_triangular(L, b_con_fuente, lower=True)
+u_lineal_con = la.solve_triangular(L, y_con, lower=True, trans=1)
+U_interno_con = u_lineal_con.reshape((n, n))
 
 # ============================================================
-# VISUALIZACIÓN
+# RECONSTRUCCIÓN DE LAS MATRICES COMPLETAS (INCLUYENDO BORDES)
+# ============================================================
+U_completa_sin = np.zeros((n + 2, n + 2))
+U_completa_con = np.zeros((n + 2, n + 2))
+
+# Insertar nodos internos
+U_completa_sin[1 : n + 1, 1 : n + 1] = U_interno_sin
+U_completa_con[1 : n + 1, 1 : n + 1] = U_interno_con
+
+# Aplicar fronteras a ambas matrices
+for U in (U_completa_sin, U_completa_con):
+    U[0, :] = T_superior
+    U[-1, :] = T_inferior
+    U[:, 0] = T_izquierda
+    U[:, -1] = T_derecha 
+
+# ============================================================
+# VISUALIZACIÓN DE RESULTADOS
 # ============================================================
 
-# Patrón de dispersión
-plt.figure(figsize=(6, 6))
+# 1. Estructura de la Matriz A
+plt.figure(figsize=(5, 5))
 plt.spy(A, markersize=1, color="black")
 plt.title("Estructura de Bandas de la Matriz A")
 plt.xlabel("Columnas (j)")
@@ -165,28 +179,43 @@ plt.ylabel("Filas (i)")
 plt.grid(True, alpha=0.3)
 plt.show()
 
-# Ahora debemos reconstruir la placa, necesitamos verla desde el borde exterior para que esté completa
-# Creamos la matriz extendida de 22x22 para incluir los bordes
-U_completa = np.zeros((n + 2, n + 2))
-U_completa[1 : n + 1, 1 : n + 1] = U_interno
+# Definimos los límites físicos para los heatmaps
+limites_grafico = [x_min, x_max, y_max, y_min]
 
-# Aplicamos las temperaturas de los bordes
-U_completa[0, :] = T_superior
-U_completa[-1, :] = T_inferior
-U_completa[:, 0] = T_izquierda
-U_completa[:, -1] = T_derecha 
-
-# Mapa de calor con isotermas
+# 2. Heatmap: SIN Fuente de calor
 plt.figure(figsize=(7, 6))
-# imshow dibuja la matriz en 2D. origin="upper" hace que la fila 0 quede arriba.
-plt.imshow(U_completa, cmap="jet", origin="upper")
+plt.imshow(U_completa_sin, cmap="jet", origin="upper", extent=limites_grafico)
 plt.colorbar(label="Temperatura (°C)")
+plt.contour(U_completa_sin, colors="white", levels=12, alpha=0.6, extent=limites_grafico)
+plt.title("Distribución de Temperatura (Sin Fuente)")
+plt.xlabel("Posición X")
+plt.ylabel("Posición Y")
+plt.show()
 
-print("\n")
-# Añadimos las curvas de nivel (isotermas)
-# Usamos un número fijo de niveles para ver la gradación
-plt.contour(U_completa, colors="white", levels=12, alpha=0.6)
-plt.title("Distribución Estacionaria de Temperatura")
-plt.xlabel("Índice X")
-plt.ylabel("Índice Y")
+# 3. Heatmap: CON Fuente de calor
+plt.figure(figsize=(7, 6))
+plt.imshow(U_completa_con, cmap="jet", origin="upper", extent=limites_grafico)
+plt.colorbar(label="Temperatura (°C)")
+plt.contour(U_completa_con, colors="white", levels=12, alpha=0.6, extent=limites_grafico)
+plt.title("Distribución de Temperatura (Con Fuente)")
+plt.xlabel("Posición X")
+plt.ylabel("Posición Y")
+plt.show()
+
+# 4. Perfil Transversal u(x, 0.5)
+# Creamos un vector de coordenadas X que incluye los bordes para la gráfica 2D
+x_coords_completo = np.linspace(x_min, x_max, n + 2)
+
+# Extraemos la fila central (índice centro_i + 1 debido al borde extra)
+perfil_sin = U_completa_sin[centro_i + 1, :]
+perfil_con = U_completa_con[centro_i + 1, :]
+
+plt.figure(figsize=(8, 5))
+plt.plot(x_coords_completo, perfil_sin, label="Sin fuente", linestyle="--", color="blue")
+plt.plot(x_coords_completo, perfil_con, label="Con fuente puntual", color="red", linewidth=2)
+plt.title("Perfil Transversal de Temperatura en y = 0.5")
+plt.xlabel("Posición X")
+plt.ylabel("Temperatura u(x, 0.5) [°C]")
+plt.legend()
+plt.grid(True, linestyle=":", alpha=0.7)
 plt.show()
